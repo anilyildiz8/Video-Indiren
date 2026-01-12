@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Project Specific
+ffmpeg/
+downloads/
+.video_indiren_config.json

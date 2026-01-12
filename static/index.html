@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video İndiren</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Video İndiren</h1>
+        </header>
+
+        <main>
+            <div class="input-section">
+                <div class="field">
+                    <label for="urlInput">Video URL</label>
+                    <div class="input-group">
+                        <input type="text" id="urlInput" placeholder="https://youtube.com/..." autocomplete="off">
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label for="dirInput">indirme klasörü</label>
+                    <div class="input-group">
+                        <input type="text" id="dirInput" placeholder="Detecting downloads folder..." readonly>
+                        <button class="browse-btn" onclick="browseFolder()">Browse</button>
+                    </div>
+                </div>
+
+                <button id="downloadBtn" onclick="startDownload()">
+                    <span id="btnText">İndir</span>
+                    <div class="loader" id="btnLoader"></div>
+                </button>
+            </div>
+
+            <div id="statusMessage" class="status"></div>
+
+            <div id="progressContainer" class="progress-container hidden">
+                <div class="progress-header">
+                    <span id="progressPercent">0%</span>
+                    <span id="downloadSpeed">0 KB/s</span>
+                </div>
+                <div id="progressInfo"
+                    style="font-size: 0.8rem; color: #a0aec0; margin-bottom: 5px; text-align: center;">0.0MB / 0.0MB
+                </div>
+                <div class="progress-bar-wrapper">
+                    <div id="progressBar" class="progress-bar"></div>
+                </div>
+            </div>
+
+            <div id="resultCard" class="result-card hidden">
+                <div class="icon">✅</div>
+                <div class="details">
+                    <h3>İndirme Tamamlandı!</h3>
+                    <p id="filePath">Kaydedildi: ...</p>
+                </div>
+                <button class="icon-btn" onclick="openResultFolder()">📂</button>
+            </div>
+        </main>
+
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+
+</html>
