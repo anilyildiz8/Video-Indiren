@@ -10,8 +10,15 @@ async function startDownload() {
     const filePath = document.getElementById('filePath');
 
     const dirInput = document.getElementById('dirInput');
+    const qualitySelect = document.getElementById('qualitySelect');
+    const audioToggle = document.getElementById('audioOnlyToggle');
+    const playlistToggle = document.getElementById('playlistToggle');
+
     const url = input.value.trim();
     const downloadDir = dirInput.value.trim();
+    const quality = qualitySelect.value;
+    const audio_only = audioToggle.checked;
+    const download_playlist = playlistToggle.checked;
 
     if (!url) {
         status.textContent = "Lütfen geçerli bir URL girin";
@@ -24,6 +31,8 @@ async function startDownload() {
     resultCard.classList.add('hidden');
     input.disabled = true;
     dirInput.disabled = true;
+    audioToggle.disabled = true;
+    playlistToggle.disabled = true;
     btn.disabled = true;
     btnText.style.display = 'none';
     btnLoader.style.display = 'block';
@@ -31,11 +40,14 @@ async function startDownload() {
     const progressContainer = document.getElementById('progressContainer');
     const progressBar = document.getElementById('progressBar');
     const progressPercent = document.getElementById('progressPercent');
+    const playlistCounter = document.getElementById('playlistCounter');
     const downloadSpeed = document.getElementById('downloadSpeed');
     const progressInfo = document.getElementById('progressInfo');
 
     progressContainer.classList.remove('hidden');
     progressPercent.innerText = "0%";
+    playlistCounter.innerText = "";
+    playlistCounter.style.display = download_playlist ? 'inline-block' : 'none';
     downloadSpeed.innerText = "Bağlanılıyor...";
     progressInfo.innerText = "0.0MB / 0.0MB";
     progressBar.style.width = "0%";
@@ -47,9 +59,22 @@ async function startDownload() {
             const data = await res.json();
             if (data.status === 'downloading') {
                 progressPercent.innerText = data.percent;
+
+                // Show counter only if info is available to avoid "hollow circle"
+                if (data.playlist_info) {
+                    playlistCounter.innerText = data.playlist_info;
+                    playlistCounter.style.display = 'inline-block';
+                } else {
+                    playlistCounter.style.display = 'none';
+                }
+
                 downloadSpeed.innerText = data.speed;
                 progressInfo.innerText = data.size_info || "";
                 progressBar.style.width = data.percent;
+            } else if (data.status === 'merging') {
+                downloadSpeed.innerText = "Birleştiriliyor...";
+                progressInfo.innerText = "Dosya birleştiriliyor (FFmpeg)...";
+                progressBar.style.width = "100%";
             }
         } catch (e) {
             console.error("Progress poll failed", e);
@@ -64,13 +89,21 @@ async function startDownload() {
             },
             body: JSON.stringify({
                 url: url,
-                download_dir: downloadDir
+                download_dir: downloadDir,
+                quality: quality,
+                audio_only: audio_only,
+                download_playlist: download_playlist
             }),
         });
 
         const data = await response.json();
 
         if (response.ok) {
+            if (data.status === "cancelled") {
+                status.textContent = "İndirme iptal edildi";
+                status.className = "status error";
+                return;
+            }
             status.textContent = "İndirme başarılı!";
             status.className = "status success";
             filePath.textContent = "Kaydedildi: " + data.filename;
@@ -84,9 +117,16 @@ async function startDownload() {
         status.textContent = error.message;
         status.className = "status error";
     } finally {
+        const cancelBtn = document.getElementById('cancelBtn');
+        cancelBtn.disabled = false;
+        cancelBtn.innerText = "İptal Et";
+
         clearInterval(pollInterval);
         progressContainer.classList.add('hidden');
         input.disabled = false;
+        dirInput.disabled = false;
+        audioToggle.disabled = false;
+        playlistToggle.disabled = false;
         btn.disabled = false;
         btnText.style.display = 'block';
         btnLoader.style.display = 'none';
@@ -107,6 +147,17 @@ async function browseFolder() {
     }
 }
 
+async function cancelDownload() {
+    try {
+        const btn = document.getElementById('cancelBtn');
+        btn.disabled = true;
+        btn.innerText = "İptal ediliyor...";
+        await fetch('/api/cancel', { method: 'POST' });
+    } catch (e) {
+        console.error("Cancel failed", e);
+    }
+}
+
 // Fetch default config on load
 window.addEventListener('load', async () => {
     try {
@@ -115,8 +166,24 @@ window.addEventListener('load', async () => {
         if (data.default_dir) {
             document.getElementById('dirInput').value = data.default_dir;
         }
+        if (data.quality) {
+            document.getElementById('qualitySelect').value = data.quality;
+        }
     } catch (e) {
         console.error("Failed to fetch config", e);
+    }
+});
+
+// Quality change listener
+document.getElementById('qualitySelect').addEventListener('change', async (e) => {
+    try {
+        await fetch('/api/set_quality', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quality: e.target.value })
+        });
+    } catch (e) {
+        console.error("Failed to save quality", e);
     }
 });
 

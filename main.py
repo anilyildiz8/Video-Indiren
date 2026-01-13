@@ -19,16 +19,33 @@ from tkinter import filedialog
 import setup_ffmpeg
 import multiprocessing
 import json
+import re
+
+# --- AppData Management ---
+def get_app_data_dir():
+    if sys.platform == 'win32':
+        base = os.environ.get('APPDATA', os.path.expanduser('~\\AppData\\Roaming'))
+    else:
+        base = os.path.expanduser('~/.config')
+    
+    app_dir = os.path.join(base, 'VideoIndiren')
+    if not os.path.exists(app_dir):
+        os.makedirs(app_dir)
+    return app_dir
+
+APP_DATA_DIR = get_app_data_dir()
+LOG_FILE = os.path.join(APP_DATA_DIR, 'app.log')
+CONFIG_FILE = os.path.join(APP_DATA_DIR, 'config.json')
+FFMPEG_DIR = os.path.join(APP_DATA_DIR, 'ffmpeg')
 
 # --- Logging Config ---
 logging.basicConfig(
-    filename='app.log',
+    filename=LOG_FILE,
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# --- FIX: Redirect stdout/stderr for windowed EXE ---
 if getattr(sys, 'frozen', False):
     # Redirect stdout and stderr to devnull to prevent crashes when console is missing
     f = open(os.devnull, 'w')
@@ -62,32 +79,35 @@ if not os.path.exists(static_dir):
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 # --- 2. Global State ---
-CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".video_indiren_config.json")
 
 def load_config():
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r') as f:
                 data = json.load(f)
-                return data.get("download_dir")
+                return data.get("download_dir"), data.get("quality", "best")
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
-    return None
+    return None, "best"
 
-def save_config(download_dir):
+def save_config(download_dir=None, quality=None):
     try:
+        current_dir, current_quality = load_config()
+        new_dir = download_dir if download_dir is not None else current_dir
+        new_quality = quality if quality is not None else current_quality
         with open(CONFIG_FILE, 'w') as f:
-            json.dump({"download_dir": download_dir}, f)
+            json.dump({"download_dir": new_dir, "quality": new_quality}, f)
     except Exception as e:
         logger.error(f"Failed to save config: {e}")
 
 last_heartbeat_time = time.time() + 30.0 # 30s initial grace for slower PCs
 server_should_exit = False
-progress_state = {"percent": "0%", "speed": "0KB/s", "status": "idle"}
+progress_state = {"percent": "0%", "speed": "0KB/s", "status": "idle", "playlist_info": ""}
 CURRENT_PROCESS_FILES = [] # Track files being downloaded in current session
+cancel_requested = False # Global flag for cancellation
 
 # Preference Order: 1. Config File, 2. System Downloads, 3. Local Folder
-saved_dir = load_config()
+saved_dir, saved_quality = load_config()
 if saved_dir and os.path.exists(saved_dir):
     DOWNLOAD_DIR = saved_dir
 else:
@@ -100,6 +120,9 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 class DownloadRequest(BaseModel):
     url: str
     download_dir: str = None
+    quality: str = "best"
+    audio_only: bool = False
+    download_playlist: bool = False
 
 def format_bytes(b):
     if b is None or b == 0: return "0.0B"
@@ -110,27 +133,57 @@ def format_bytes(b):
         b /= 1024.0
     return f"{b:.1f}TB"
 
+def strip_ansi(text):
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
+def postprocessor_hook(d):
+    global progress_state
+    if d['status'] == 'started':
+        progress_state.update({"status": "merging", "speed": "N/A"})
+    elif d['status'] == 'finished':
+        progress_state.update({"status": "finished", "percent": "100%"})
+
 def progress_hook(d):
-    global progress_state, CURRENT_PROCESS_FILES
+    global progress_state, CURRENT_PROCESS_FILES, cancel_requested
+    
+    if cancel_requested:
+        raise ValueError("DOWNLOAD_CANCELLED")
+
     if d['status'] == 'downloading':
-        p = d.get('_percent_str', '0%')
-        s = d.get('_speed_str', '0KB/s')
+        p = strip_ansi(d.get('_percent_str', '0%')).strip()
+        s = strip_ansi(d.get('_speed_str', '0KB/s')).strip()
         filename = d.get('filename')
         
         dl = d.get('downloaded_bytes', 0)
         total = d.get('total_bytes') or d.get('total_bytes_estimate', 0)
         size_info = f"{format_bytes(dl)} / {format_bytes(total)}"
         
+        # Playlist info - try both top-level and info_dict (some extractors use different levels)
+        info_dict = d.get('info_dict', {})
+        playlist_index = d.get('playlist_index') or info_dict.get('playlist_index')
+        n_entries = d.get('n_entries') or info_dict.get('n_entries')
+        
+        playlist_info = ""
+        if playlist_index is not None and n_entries is not None:
+            playlist_info = f"{playlist_index} / {n_entries}"
+
         if filename and filename not in CURRENT_PROCESS_FILES:
             CURRENT_PROCESS_FILES.append(filename)
         
         progress_state.update({
-            "percent": p.strip(), 
-            "speed": s.strip(), 
+            "percent": p, 
+            "speed": s, 
             "size_info": size_info,
+            "playlist_info": playlist_info,
             "status": "downloading"
         })
     elif d['status'] == 'finished':
+        filename = d.get('filename')
+        # On success, immediately remove from cleanup list so it's persisted even on late cancel
+        if filename and filename in CURRENT_PROCESS_FILES:
+            CURRENT_PROCESS_FILES.remove(filename)
+
         progress_state.update({
             "percent": "100%", 
             "speed": "0KB/s", 
@@ -141,37 +194,105 @@ def progress_hook(d):
 async def get_progress():
     return progress_state
 
+@app.post("/api/cancel")
+async def cancel_download():
+    global cancel_requested
+    cancel_requested = True
+    return {"status": "cancel_requested"}
+
 @app.post("/api/download")
 async def download_video(request: DownloadRequest):
-    global progress_state, CURRENT_PROCESS_FILES
+    global progress_state, CURRENT_PROCESS_FILES, cancel_requested
     url = request.url
     download_id = str(uuid.uuid4())[:8]
     
-    # Reset progress state
-    progress_state = {"percent": "0%", "speed": "0KB/s", "status": "starting"}
+    # Reset state for new download
+    cancel_requested = False
+    progress_state = {"percent": "0%", "speed": "0KB/s", "status": "starting", "playlist_info": ""}
     
     # Determine the download directory
     current_download_dir = DOWNLOAD_DIR
     if request.download_dir and os.path.exists(request.download_dir):
         current_download_dir = request.download_dir
     
-    logger.info(f"Received download request for URL: {url} (ID: {download_id})")
-    output_template = f"{current_download_dir}/{download_id}_%(title)s.%(ext)s"
+    logger.info(f"Received download request for URL: {url} (ID: {download_id}, Quality: {request.quality}, Audio: {request.audio_only}, Playlist: {request.download_playlist})")
+    
+    # Template: Include playlist index if it's a playlist to avoid name collisions
+    if request.download_playlist:
+        output_template = f"{current_download_dir}/%(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s"
+    else:
+        # Use video ID in bracket to be unique but stable for duplicate detection
+        output_template = f"{current_download_dir}/%(title)s [%(id)s].%(ext)s"
 
     ydl_opts = {
-        # Force MP4: best mp4 video + best m4a audio, or just best mp4
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'merge_output_format': 'mp4',
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
-        'restrictfilenames': True,
+        'nocolor': True,
+        'restrictfilenames': False,
         'progress_hooks': [progress_hook],
+        'postprocessor_hooks': [postprocessor_hook],
+        'noplaylist': not request.download_playlist,
+        'nooverwrites': True, # Skip if file exists
+        'concurrent_fragment_downloads': 10, # Keep fast fragments
+        'nocheckcertificate': True,
+        'geo_bypass': True,
+        'prefer_ffmpeg': True,
+        'windows_filenames': True,
+        # Strict format sorting to prefer MP4 and M4A
+        'format_sort': ['res', 'ext:mp4:m4a'],
+        # Proven fast merge strategy
+        'postprocessor_args': {
+            'merger': ['-c', 'copy']
+        }
     }
 
+    if request.audio_only:
+        ydl_opts['format'] = 'bestaudio/best'
+        ydl_opts['postprocessors'] = [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }]
+    else:
+        # Dynamic format selection based on quality
+        if request.quality == "4k":
+            fmt = 'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]/best'
+        elif request.quality == "1080p":
+            fmt = 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best'
+        elif request.quality == "720p":
+            fmt = 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]/best'
+        elif request.quality == "480p":
+            fmt = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]/best'
+        else: # best
+            fmt = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best'
+        
+        ydl_opts['format'] = fmt
+        ydl_opts['merge_output_format'] = 'mp4'
+
     def execute_download():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        target_template = output_template
+        
+        # Dynamic numbering for playlists
+        if request.download_playlist:
+            try:
+                # Fast pre-scan to get entry count
+                with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True, 'nocheckcertificate': True}) as ydl_meta:
+                    meta = ydl_meta.extract_info(url, download=False)
+                    if meta and 'entries' in meta:
+                        count = len(list(meta['entries']))
+                        padding = "03d" if count >= 100 else ("02d" if count >= 10 else "s")
+                        target_template = f"{current_download_dir}/%(playlist_title)s/%(playlist_index){padding} - %(title)s.%(ext)s"
+                        logger.info(f"Playlist detected with {count} entries. Using padding: {padding}")
+            except Exception as e:
+                logger.warning(f"Failed to pre-scan playlist for numbering: {e}")
+
+        final_opts = ydl_opts.copy()
+        final_opts['outtmpl'] = target_template
+
+        with yt_dlp.YoutubeDL(final_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            # Use prepare_filename on the top-level info
             return ydl.prepare_filename(info)
 
     try:
@@ -203,8 +324,15 @@ async def download_video(request: DownloadRequest):
         }
 
     except Exception as e:
+        if str(e) == "DOWNLOAD_CANCELLED":
+            logger.info(f"Download {download_id} was cancelled by user.")
+            progress_state["status"] = "cancelled"
+            cleanup_interrupted_downloads()
+            return {"status": "cancelled", "message": "İndirme iptal edildi"}
+        
         logger.error(f"Download error for ID {download_id}: {str(e)}", exc_info=True)
         print(f"Download error: {str(e)}")
+        progress_state["status"] = "error"
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/heartbeat")
@@ -215,7 +343,16 @@ async def heartbeat():
 
 @app.get("/api/config")
 async def get_config():
-    return {"default_dir": DOWNLOAD_DIR}
+    _, quality = load_config()
+    return {"default_dir": DOWNLOAD_DIR, "quality": quality}
+
+class QualityRequest(BaseModel):
+    quality: str
+
+@app.post("/api/set_quality")
+async def set_quality(request: QualityRequest):
+    save_config(quality=request.quality)
+    return {"status": "ok"}
 
 @app.get("/api/select_folder")
 async def select_folder():
@@ -269,24 +406,42 @@ def start_server():
         server.run()
     except Exception as e:
         logger.error(f"Uvicorn failed to start: {e}")
-        print(f"Server error: {e}")
 
 def cleanup_interrupted_downloads():
-    """Removes partial files if app closes mid-download."""
-    global CURRENT_PROCESS_FILES
-    logger.info(f"Cleaning up {len(CURRENT_PROCESS_FILES)} potential partial files...")
-    for f in CURRENT_PROCESS_FILES:
-        try:
-            # Delete the main file if it exists (partial)
-            if os.path.exists(f):
-                os.remove(f)
-            # Delete .part and .ytdl files
-            for suffix in ['.part', '.ytdl']:
-                pf = f + suffix
-                if os.path.exists(pf):
-                    os.remove(pf)
-        except Exception as e:
-            logger.error(f"Failed to cleanup {f}: {e}")
+    """Delete leftover temporary files aggressively."""
+    try:
+        # Search in the main download directory and its subfolders
+        if os.path.exists(DOWNLOAD_DIR):
+            logger.info(f"Aggressively cleaning up temporary files in {DOWNLOAD_DIR}...")
+            
+            # Forcefully stop any merging processes to release file locks on Windows
+            if sys.platform == "win32":
+                try:
+                    import subprocess
+                    subprocess.run(['taskkill', '/F', '/IM', 'ffmpeg.exe', '/T'], capture_output=True, check=False)
+                    time.sleep(1) # Wait for OS to settle
+                except:
+                    pass
+
+            for root, dirs, files in os.walk(DOWNLOAD_DIR):
+                for file in files:
+                    if any(ext in file.lower() for ext in ('.part', '.ytdl', '.temp', '.tmp', '.part-frag')):
+                        file_path = os.path.join(root, file)
+                        # Deletion loop to ensure lock release
+                        for attempt in range(5):
+                            try:
+                                if os.path.exists(file_path):
+                                    os.remove(file_path)
+                                    if not os.path.exists(file_path):
+                                        logger.info(f"Successfully deleted: {file}")
+                                        break
+                                    else:
+                                        raise Exception("File still exists")
+                            except:
+                                if attempt < 4:
+                                    time.sleep(0.5)
+    except Exception as e:
+        logger.error(f"Aggressive cleanup failed: {e}")
 
 def monitor_heartbeat():
     """Monitors heartbeats and shuts down the process if none are received."""
@@ -295,36 +450,47 @@ def monitor_heartbeat():
         time.sleep(2)
         if time.time() - last_heartbeat_time > 10:
             logger.info("No heartbeat received for 10 seconds. Shutting down...")
+            global cancel_requested
+            cancel_requested = True
+            time.sleep(3) 
             cleanup_interrupted_downloads()
-            # Use os._exit for a more forceful shutdown in the compiled EXE
             os._exit(0)
             break
 
 def check_ffmpeg():
-    # 1. Check if FFmpeg is already in PATH
+    # 1. Check if FFmpeg is already in PATH (System installed)
     if shutil.which("ffmpeg"):
         logger.info("FFmpeg found in system PATH.")
         return
 
-    # 2. Check for local 'ffmpeg/bin' folder (created by setup_ffmpeg.py)
-    local_ffmpeg = os.path.join(os.getcwd(), "ffmpeg", "bin")
-    if os.path.exists(local_ffmpeg):
-        logger.info(f"Found local FFmpeg at {local_ffmpeg}. Adding to PATH...")
-        os.environ["PATH"] += os.pathsep + local_ffmpeg
+    # 2. Check for AppData 'ffmpeg/bin' folder
+    appdata_ffmpeg_bin = os.path.join(FFMPEG_DIR, "bin")
+    if os.path.exists(appdata_ffmpeg_bin):
+        logger.info(f"Found FFmpeg in AppData: {appdata_ffmpeg_bin}. Adding to PATH...")
+        os.environ["PATH"] += os.pathsep + appdata_ffmpeg_bin
         if shutil.which("ffmpeg"):
-             logger.info("FFmpeg successfullly added to PATH.")
+             logger.info("FFmpeg successfully added to PATH from AppData.")
              return
 
-    # 3. Auto-download
-    logger.info("FFmpeg NOT found! Attempting automatic download...")
-    print("FFmpeg not found. Downloading dependencies, please wait...")
+    # 3. Legacy check & cleanup: If found next to EXE, move or delete it
+    local_ffmpeg = os.path.join(os.getcwd(), "ffmpeg")
+    if os.path.exists(local_ffmpeg):
+        logger.info("Found legacy FFmpeg folder next to EXE. Cleaning up...")
+        try:
+            shutil.rmtree(local_ffmpeg)
+        except:
+            pass
+
+    # 4. Auto-download to AppData
+    logger.info("FFmpeg NOT found! Attempting automatic download to AppData...")
+    print("FFmpeg not found. Downloading dependencies to AppData, please wait...")
     try:
-        setup_ffmpeg.download_ffmpeg()
+        setup_ffmpeg.download_ffmpeg(FFMPEG_DIR)
         # Verify again after download
-        if os.path.exists(local_ffmpeg):
-            os.environ["PATH"] += os.pathsep + local_ffmpeg
+        if os.path.exists(appdata_ffmpeg_bin):
+            os.environ["PATH"] += os.pathsep + appdata_ffmpeg_bin
             if shutil.which("ffmpeg"):
-                 logger.info("FFmpeg successfully installed and added to PATH.")
+                 logger.info("FFmpeg successfully installed to AppData and added to PATH.")
                  return
     except Exception as e:
         logger.error(f"Automatic FFmpeg download failed: {e}")
@@ -374,6 +540,9 @@ if __name__ == '__main__':
     multiprocessing.freeze_support()
     check_ffmpeg()
     
+    # Startup Sweep: Clean any leftovers from previous crashed sessions
+    cleanup_interrupted_downloads()
+    
     # Launch browser after a slight delay to ensure server is starting
     try:
         url = "http://127.0.0.1:4321"
@@ -386,12 +555,11 @@ if __name__ == '__main__':
         # Launch browser
         open_browser_app(url)
         
-        print(f"App running at {url}. Monitoring heartbeat...")
         # Start server in main thread (blocking)
         start_server()
             
     except KeyboardInterrupt:
-        print("\nStopping server...")
+        pass
     except Exception as e:
         logger.error(f"Startup error: {e}")
         print(f"Error: {e}")

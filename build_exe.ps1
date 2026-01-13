@@ -1,8 +1,7 @@
 # Final Build script for Video İndiren (No Console)
 python -m pip install pyinstaller -r requirements.txt
 
-python -m PyInstaller --onefile `
-    --noconsole `
+python -m PyInstaller --onefile --noconsole `
     --name "VideoIndiren" `
     --add-data "static;static" `
     --hidden-import "uvicorn.logging" `

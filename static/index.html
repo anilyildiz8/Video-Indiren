@@ -27,6 +27,37 @@
                 </div>
 
                 <div class="field">
+                    <label for="qualitySelect">Video Kalitesi</label>
+                    <div class="input-group">
+                        <select id="qualitySelect" class="quality-select"
+                            style="width: 100%; background: transparent; border: none; color: white; padding: 1rem; outline: none; cursor: pointer;">
+                            <option value="best" style="background: #1a1a1a;">En İyi</option>
+                            <option value="4k" style="background: #1a1a1a;">4K</option>
+                            <option value="1080p" style="background: #1a1a1a;">1080p</option>
+                            <option value="720p" style="background: #1a1a1a;">720p</option>
+                            <option value="480p" style="background: #1a1a1a;">480p</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="options-row">
+                    <div class="option-item">
+                        <label class="switch">
+                            <input type="checkbox" id="audioOnlyToggle">
+                            <span class="slider"></span>
+                        </label>
+                        <span>Sadece Ses</span>
+                    </div>
+                    <div class="option-item">
+                        <label class="switch">
+                            <input type="checkbox" id="playlistToggle">
+                            <span class="slider"></span>
+                        </label>
+                        <span>Oynatma Listesi</span>
+                    </div>
+                </div>
+
+                <div class="field">
                     <label for="dirInput">indirme klasörü</label>
                     <div class="input-group">
                         <input type="text" id="dirInput" placeholder="Detecting downloads folder..." readonly>
@@ -45,6 +76,7 @@
             <div id="progressContainer" class="progress-container hidden">
                 <div class="progress-header">
                     <span id="progressPercent">0%</span>
+                    <span id="playlistCounter" class="playlist-counter"></span>
                     <span id="downloadSpeed">0 KB/s</span>
                 </div>
                 <div id="progressInfo"
@@ -53,6 +85,7 @@
                 <div class="progress-bar-wrapper">
                     <div id="progressBar" class="progress-bar"></div>
                 </div>
+                <button id="cancelBtn" class="cancel-btn" onclick="cancelDownload()">İptal Et</button>
             </div>
 
             <div id="resultCard" class="result-card hidden">

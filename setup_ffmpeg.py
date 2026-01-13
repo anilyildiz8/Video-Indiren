@@ -11,13 +11,19 @@ FFMPEG_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 DEST_DIR = os.path.join(os.getcwd(), "ffmpeg")
 BIN_DIR = os.path.join(DEST_DIR, "bin")
 
-def download_ffmpeg():
-    if os.path.exists(BIN_DIR) and os.path.exists(os.path.join(BIN_DIR, "ffmpeg.exe")):
-        logging.info("✅ FFmpeg is already installed in the 'ffmpeg' folder.")
+def download_ffmpeg(dest_dir=None):
+    if dest_dir is None:
+        dest_dir = os.path.join(os.getcwd(), "ffmpeg")
+    
+    bin_dir = os.path.join(dest_dir, "bin")
+    
+    if os.path.exists(bin_dir) and os.path.exists(os.path.join(bin_dir, "ffmpeg.exe")):
+        logging.info(f"✅ FFmpeg already installed in: {bin_dir}")
         return
 
     logging.info("⬇️ Downloading FFmpeg... (this might take a minute)")
-    zip_path = "ffmpeg.zip"
+    zip_path = os.path.join(os.path.dirname(dest_dir), "ffmpeg.zip") if os.path.dirname(dest_dir) else "ffmpeg.zip"
+    temp_extract = os.path.join(os.path.dirname(dest_dir), "ffmpeg_temp") if os.path.dirname(dest_dir) else "ffmpeg_temp"
     
     try:
         # Download
@@ -26,34 +32,31 @@ def download_ffmpeg():
         
         # Extract
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall("ffmpeg_temp")
+            zip_ref.extractall(temp_extract)
         
         # Move bin folder to final location
-        # The zip usually contains a root folder like 'ffmpeg-6.0-essentials_build'
-        temp_root = "ffmpeg_temp"
-        extracted_folders = os.listdir(temp_root)
+        extracted_folders = os.listdir(temp_extract)
         if not extracted_folders:
             raise Exception("Extraction failed, temp folder empty")
             
-        source_dir = os.path.join(temp_root, extracted_folders[0])
+        source_dir = os.path.join(temp_extract, extracted_folders[0])
         
-        if os.path.exists(DEST_DIR):
-            shutil.rmtree(DEST_DIR)
+        if os.path.exists(dest_dir):
+            shutil.rmtree(dest_dir)
             
-        shutil.move(source_dir, DEST_DIR)
+        shutil.move(source_dir, dest_dir)
         
         # Cleanup
-        os.remove(zip_path)
-        shutil.rmtree(temp_root)
+        if os.path.exists(zip_path): os.remove(zip_path)
+        if os.path.exists(temp_extract): shutil.rmtree(temp_extract)
         
-        logging.info(f"✅ FFmpeg installed successfully to: {DEST_DIR}")
-        logging.info("You don't need to change system PATH variables. The app will use this local version.")
+        logging.info(f"✅ FFmpeg installed successfully to: {dest_dir}")
         
     except Exception as e:
         logging.error(f"❌ Failed to download/install FFmpeg: {e}")
         # Cleanup partials
         if os.path.exists(zip_path): os.remove(zip_path)
-        if os.path.exists("ffmpeg_temp"): shutil.rmtree("ffmpeg_temp")
+        if os.path.exists(temp_extract): shutil.rmtree(temp_extract)
 
 if __name__ == "__main__":
     download_ffmpeg()

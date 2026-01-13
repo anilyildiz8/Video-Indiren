@@ -83,7 +83,8 @@ header p {
     transition: all 0.3s ease;
 }
 
-input {
+input,
+select {
     flex: 1;
     background: transparent;
     border: none;
@@ -93,7 +94,11 @@ input {
     outline: none;
     font-family: inherit;
     min-width: 0;
-    /* Prevents overflow in flex */
+}
+
+select option {
+    background: #1a1a1a;
+    color: white;
 }
 
 .browse-btn {
@@ -180,6 +185,16 @@ input:disabled {
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+.playlist-counter {
+    background: rgba(99, 102, 241, 0.2);
+    color: #a855f7;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
 .progress-header {
     display: flex;
     justify-content: space-between;
@@ -201,6 +216,85 @@ input:disabled {
     background: linear-gradient(90deg, #6366f1, #a855f7);
     transition: width 0.3s ease;
     box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+}
+
+.cancel-btn {
+    width: 100%;
+    margin-top: 15px;
+    background: rgba(255, 68, 68, 0.1);
+    color: #ff4444;
+    border: 1px solid rgba(255, 68, 68, 0.2);
+    padding: 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s ease;
+}
+
+.cancel-btn:hover {
+    background: rgba(255, 68, 68, 0.2);
+    border-color: rgba(255, 68, 68, 0.4);
+}
+
+/* Options Toggles */
+.options-row {
+    display: flex;
+    gap: 2rem;
+    margin: 1.5rem 0.5rem;
+}
+
+.option-item {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.switch {
+    position: relative;
+    display: inline-block;
+    width: 44px;
+    height: 22px;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(255, 255, 255, 0.1);
+    transition: .3s;
+    border-radius: 34px;
+}
+
+.slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: .3s;
+    border-radius: 50%;
+}
+
+input:checked+.slider {
+    background: linear-gradient(90deg, #6366f1, #a855f7);
+}
+
+input:checked+.slider:before {
+    transform: translateX(22px);
 }
 
 .result-card {
