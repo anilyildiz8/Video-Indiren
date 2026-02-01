@@ -239,6 +239,21 @@ async def download_video(request: DownloadRequest):
         'geo_bypass': True,
         'prefer_ffmpeg': True,
         'windows_filenames': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'add_header': [
+            'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language: en-US,en;q=0.9',
+            'Cache-Control: no-cache',
+            'Pragma: no-cache',
+            'Sec-Ch-Ua: "Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile: ?0',
+            'Sec-Ch-Ua-Platform: "Windows"',
+            'Sec-Fetch-Dest: document',
+            'Sec-Fetch-Mode: navigate',
+            'Sec-Fetch-Site: none',
+            'Sec-Fetch-User: ?1',
+            'Upgrade-Insecure-Requests: 1',
+        ],
         # Strict format sorting to prefer MP4 and M4A
         'format_sort': ['res', 'ext:mp4:m4a'],
         # Proven fast merge strategy
@@ -277,7 +292,12 @@ async def download_video(request: DownloadRequest):
         if request.download_playlist:
             try:
                 # Fast pre-scan to get entry count
-                with yt_dlp.YoutubeDL({'extract_flat': True, 'quiet': True, 'nocheckcertificate': True}) as ydl_meta:
+                with yt_dlp.YoutubeDL({
+                    'extract_flat': True, 
+                    'quiet': True, 
+                    'nocheckcertificate': True,
+                    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                }) as ydl_meta:
                     meta = ydl_meta.extract_info(url, download=False)
                     if meta and 'entries' in meta:
                         count = len(list(meta['entries']))
@@ -290,10 +310,43 @@ async def download_video(request: DownloadRequest):
         final_opts = ydl_opts.copy()
         final_opts['outtmpl'] = target_template
 
-        with yt_dlp.YoutubeDL(final_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            # Use prepare_filename on the top-level info
-            return ydl.prepare_filename(info)
+        def attempt_dl(opts):
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                return ydl.prepare_filename(info)
+
+        # Multi-browser cookie strategy to bypass 403/locks
+        browsers = ['edge', 'chrome', 'brave', 'opera', 'firefox']
+        last_error = None
+        
+        for browser in browsers:
+            try:
+                current_opts = final_opts.copy()
+                # yt-dlp might fail if browser not installed, so we wrap in try
+                current_opts['cookiesfrombrowser'] = (browser,)
+                logger.info(f"Attempting download with {browser} cookies...")
+                return attempt_dl(current_opts)
+            except Exception as e:
+                err_msg = str(e).lower()
+                last_error = e
+                # Check for either lock error or forbidden error to try next browser
+                if ("cookie" in err_msg and "database" in err_msg) or "forbidden" in err_msg or "403" in err_msg:
+                    logger.warning(f"Browser {browser} failed (lock or 403), trying next...")
+                    continue
+                else:
+                    # If it's a completely different error, stop trying browsers
+                    break
+        
+        # Last resort: Try without any cookies but with advanced headers
+        try:
+            logger.info("Retrying without cookies...")
+            fallback_opts = final_opts.copy()
+            if 'cookiesfrombrowser' in fallback_opts:
+                del fallback_opts['cookiesfrombrowser']
+            return attempt_dl(fallback_opts)
+        except Exception as e:
+            # Raise the 403 or original error if fallback also fails
+            raise e if last_error is None else last_error
 
     try:
         logger.info(f"Starting download for ID: {download_id}")
