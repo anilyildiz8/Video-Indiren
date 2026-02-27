@@ -1,4 +1,164 @@
 let currentSavedPath = ""; // Global tracker for the last saved file
+let videoDuration = 0; // Total video length in seconds
+
+// Add listeners to URL input
+document.addEventListener("DOMContentLoaded", () => {
+    const urlInput = document.getElementById('urlInput');
+
+    // Auto-fetch info when user clicks away
+    urlInput.addEventListener('blur', async () => {
+        let url = urlInput.value.trim();
+        if (!url) return;
+
+        const titleLabel = document.getElementById('videoTitleLabel');
+        const durationLabel = document.getElementById('videoDurationLabel');
+        const trimmingSection = document.getElementById('trimmingSection');
+        const playlistToggle = document.getElementById('playlistToggle');
+
+        if (!playlistToggle.checked) {
+            trimmingSection.style.display = 'flex';
+        } else {
+            trimmingSection.style.display = 'none';
+        }
+
+        titleLabel.innerText = "Bilgi getiriliyor...";
+
+        try {
+            const res = await fetch('/api/info', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: url })
+            });
+            const data = await res.json();
+
+            if (data.status === 'success') {
+                videoDuration = data.duration;
+                titleLabel.innerText = data.title || "Bilinmeyen Başlık";
+                durationLabel.innerText = formatTimeLimit(videoDuration);
+                setupSliders();
+            } else {
+                titleLabel.innerText = "Video bilgisi alınamadı.";
+            }
+        } catch (e) {
+            titleLabel.innerText = "Hata oluştu.";
+        }
+    });
+
+    // Hide trimming section if downloading playlist
+    const playlistToggle = document.getElementById('playlistToggle');
+    const trimmingSection = document.getElementById('trimmingSection');
+
+    playlistToggle.addEventListener('change', () => {
+        if (playlistToggle.checked) {
+            trimmingSection.style.display = 'none';
+        } else if (urlInput.value.trim() && videoDuration > 0) {
+            trimmingSection.style.display = 'flex';
+        }
+    });
+
+    setupSliderEvents();
+});
+
+// Time formatting helpers
+function formatTimeLimit(seconds) {
+    if (!seconds) return "00:00:00";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+}
+
+function parseTimeInput(timeStr) {
+    if (!timeStr) return 0;
+    const parts = timeStr.split(':');
+    if (parts.length === 3) {
+        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+    } else if (parts.length === 2) {
+        return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+    } else {
+        return parseInt(timeStr) || 0;
+    }
+}
+
+// Slider logic
+function setupSliders() {
+    const minSlider = document.getElementById('rangeMin');
+    const maxSlider = document.getElementById('rangeMax');
+    const startInput = document.getElementById('startTimeInput');
+    const endInput = document.getElementById('endTimeInput');
+
+    minSlider.max = videoDuration;
+    maxSlider.max = videoDuration;
+
+    minSlider.value = 0;
+    maxSlider.value = videoDuration;
+
+    startInput.value = formatTimeLimit(0);
+    endInput.value = formatTimeLimit(videoDuration);
+
+    updateSliderTrack();
+}
+
+function setupSliderEvents() {
+    const minSlider = document.getElementById('rangeMin');
+    const maxSlider = document.getElementById('rangeMax');
+    const startInput = document.getElementById('startTimeInput');
+    const endInput = document.getElementById('endTimeInput');
+
+    minSlider.addEventListener('input', () => {
+        let minVal = parseInt(minSlider.value);
+        let maxVal = parseInt(maxSlider.value);
+        if (minVal > maxVal - 1) { // Min 1 sec gap
+            minSlider.value = maxVal - 1;
+            minVal = maxVal - 1;
+        }
+        startInput.value = formatTimeLimit(minVal);
+        updateSliderTrack();
+    });
+
+    maxSlider.addEventListener('input', () => {
+        let minVal = parseInt(minSlider.value);
+        let maxVal = parseInt(maxSlider.value);
+        if (maxVal < minVal + 1) { // Min 1 sec gap
+            maxSlider.value = minVal + 1;
+            maxVal = minVal + 1;
+        }
+        endInput.value = formatTimeLimit(maxVal);
+        updateSliderTrack();
+    });
+
+    // Update sliders when text inputs are manually changed
+    startInput.addEventListener('change', () => {
+        let sec = parseTimeInput(startInput.value);
+        if (sec > parseInt(maxSlider.value)) sec = parseInt(maxSlider.value) - 1;
+        if (sec < 0) sec = 0;
+        minSlider.value = sec;
+        startInput.value = formatTimeLimit(sec);
+        updateSliderTrack();
+    });
+
+    endInput.addEventListener('change', () => {
+        let sec = parseTimeInput(endInput.value);
+        if (sec < parseInt(minSlider.value)) sec = parseInt(minSlider.value) + 1;
+        if (sec > videoDuration) sec = videoDuration;
+        maxSlider.value = sec;
+        endInput.value = formatTimeLimit(sec);
+        updateSliderTrack();
+    });
+}
+
+function updateSliderTrack() {
+    const minSlider = document.getElementById('rangeMin');
+    const maxSlider = document.getElementById('rangeMax');
+    const track = document.getElementById('sliderTrack');
+
+    if (videoDuration <= 0) return;
+
+    let minPercent = (minSlider.value / videoDuration) * 100;
+    let maxPercent = (maxSlider.value / videoDuration) * 100;
+
+    track.style.background = `linear-gradient(to right, rgba(255,255,255,0.1) ${minPercent}%, #a855f7 ${minPercent}%, #6366f1 ${maxPercent}%, rgba(255,255,255,0.1) ${maxPercent}%)`;
+}
 
 async function startDownload() {
     const input = document.getElementById('urlInput');
@@ -13,12 +173,16 @@ async function startDownload() {
     const qualitySelect = document.getElementById('qualitySelect');
     const audioToggle = document.getElementById('audioOnlyToggle');
     const playlistToggle = document.getElementById('playlistToggle');
+    const startTimeInput = document.getElementById('startTimeInput');
+    const endTimeInput = document.getElementById('endTimeInput');
 
     const url = input.value.trim();
     const downloadDir = dirInput.value.trim();
     const quality = qualitySelect.value;
     const audio_only = audioToggle.checked;
     const download_playlist = playlistToggle.checked;
+    const start_time = startTimeInput.value.trim();
+    const end_time = endTimeInput.value.trim();
 
     if (!url) {
         status.textContent = "Lütfen geçerli bir URL girin";
@@ -33,6 +197,8 @@ async function startDownload() {
     dirInput.disabled = true;
     audioToggle.disabled = true;
     playlistToggle.disabled = true;
+    startTimeInput.disabled = true;
+    endTimeInput.disabled = true;
     btn.disabled = true;
     btnText.style.display = 'none';
     btnLoader.style.display = 'block';
@@ -75,6 +241,10 @@ async function startDownload() {
                 downloadSpeed.innerText = "Birleştiriliyor...";
                 progressInfo.innerText = "Dosya birleştiriliyor (FFmpeg)...";
                 progressBar.style.width = "100%";
+            } else if (data.status === 'trimming') {
+                downloadSpeed.innerText = "Kesiliyor...";
+                progressInfo.innerText = "Video kesiliyor...";
+                progressBar.style.width = "100%";
             }
         } catch (e) {
             console.error("Progress poll failed", e);
@@ -82,6 +252,21 @@ async function startDownload() {
     }, 800);
 
     try {
+        let final_start = null;
+        let final_end = null;
+
+        // Only send trim parameters if the user actually modified the sliders
+        // to be something other than the full video length.
+        if (document.getElementById('trimmingSection').style.display !== 'none' && videoDuration > 0) {
+            const currentStart = parseTimeInput(start_time);
+            const currentEnd = parseTimeInput(end_time);
+
+            if (currentStart > 0 || currentEnd < videoDuration) {
+                final_start = start_time;
+                final_end = end_time;
+            }
+        }
+
         const response = await fetch('/api/download', {
             method: 'POST',
             headers: {
@@ -92,7 +277,9 @@ async function startDownload() {
                 download_dir: downloadDir,
                 quality: quality,
                 audio_only: audio_only,
-                download_playlist: download_playlist
+                download_playlist: download_playlist,
+                start_time: final_start,
+                end_time: final_end
             }),
         });
 
@@ -111,7 +298,16 @@ async function startDownload() {
             resultCard.classList.remove('hidden');
             input.value = ""; // Clear input on success
         } else {
-            throw new Error(data.detail || "İndirme başarısız");
+            // FastAPI validation errors return detail as an array of objects
+            let errorMsg = "İndirme başarısız";
+            if (data.detail) {
+                if (typeof data.detail === 'string') {
+                    errorMsg = data.detail;
+                } else if (Array.isArray(data.detail)) {
+                    errorMsg = data.detail.map(e => e.msg || JSON.stringify(e)).join(', ');
+                }
+            }
+            throw new Error(errorMsg);
         }
     } catch (error) {
         status.textContent = error.message;
@@ -127,6 +323,8 @@ async function startDownload() {
         dirInput.disabled = false;
         audioToggle.disabled = false;
         playlistToggle.disabled = false;
+        startTimeInput.disabled = false;
+        endTimeInput.disabled = false;
         btn.disabled = false;
         btnText.style.display = 'block';
         btnLoader.style.display = 'none';

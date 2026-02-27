@@ -20,3 +20,7 @@ dist/
 ffmpeg/
 downloads/
 .video_indiren_config.json
+
+# IDEs
+.vscode/
+.idea/

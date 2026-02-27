@@ -57,6 +57,28 @@
                     </div>
                 </div>
 
+                <div class="field" id="trimmingSection" style="display: none;">
+                    <label>Video Kesme</label>
+
+                    <div class="video-info-box">
+                        <span id="videoTitleLabel">Video yükleniyor...</span>
+                        <span id="videoDurationLabel">00:00:00</span>
+                    </div>
+
+                    <!-- Dual Range Slider -->
+                    <div class="range-slider-container">
+                        <div class="slider-track" id="sliderTrack"></div>
+                        <input type="range" id="rangeMin" min="0" max="100" value="0" step="1">
+                        <input type="range" id="rangeMax" min="0" max="100" value="100" step="1">
+                    </div>
+
+                    <div class="input-group" style="gap: 10px; margin-top: 10px;">
+                        <input type="text" id="startTimeInput" placeholder="Başlangıç (örn: 00:01:30)"
+                            autocomplete="off">
+                        <input type="text" id="endTimeInput" placeholder="Bitiş (örn: 00:02:45)" autocomplete="off">
+                    </div>
+                </div>
+
                 <div class="field">
                     <label for="dirInput">indirme klasörü</label>
                     <div class="input-group">

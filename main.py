@@ -105,6 +105,7 @@ server_should_exit = False
 progress_state = {"percent": "0%", "speed": "0KB/s", "status": "idle", "playlist_info": ""}
 CURRENT_PROCESS_FILES = [] # Track files being downloaded in current session
 cancel_requested = False # Global flag for cancellation
+active_ffmpeg_process = None # Track ffmpeg subprocess for cancellation
 
 # Preference Order: 1. Config File, 2. System Downloads, 3. Local Folder
 saved_dir, saved_quality = load_config()
@@ -123,6 +124,91 @@ class DownloadRequest(BaseModel):
     quality: str = "best"
     audio_only: bool = False
     download_playlist: bool = False
+    start_time: str | None = None
+    end_time: str | None = None
+
+def time_to_seconds(t_str):
+    if not t_str: return None
+    try:
+        parts = str(t_str).split(':')
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        elif len(parts) == 2:
+            return int(parts[0]) * 60 + float(parts[1])
+        else:
+            return float(t_str)
+    except:
+        return None
+
+def trim_video_ffmpeg(input_path, start_sec, end_sec):
+    """Trim a video file using ffmpeg with -c copy (near-instant, no re-encoding)."""
+    global active_ffmpeg_process, cancel_requested, progress_state
+    
+    try:
+        if cancel_requested:
+            return input_path
+            
+        base, ext = os.path.splitext(input_path)
+        trimmed_path = f"{base}_trimmed{ext}"
+        
+        cmd = [shutil.which('ffmpeg') or 'ffmpeg', '-y']
+        
+        # Seek BEFORE input for speed (-ss before -i uses keyframe seeking)
+        if start_sec and start_sec > 0:
+            cmd += ['-ss', str(start_sec)]
+        
+        cmd += ['-i', input_path]
+        
+        if end_sec is not None:
+            duration = end_sec - (start_sec or 0)
+            if duration > 0:
+                cmd += ['-t', str(duration)]
+        
+        cmd += ['-map', '0', '-c', 'copy', '-avoid_negative_ts', 'make_zero', trimmed_path]
+        
+        logger.info(f"Trimming video: {' '.join(cmd)}")
+        progress_state.update({"status": "trimming", "speed": "N/A", "percent": "100%", "size_info": "Video kesiliyor..."})
+        
+        active_ffmpeg_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        )
+        
+        # Use communicate() to avoid pipe deadlock
+        _, stderr_data = active_ffmpeg_process.communicate()
+        returncode = active_ffmpeg_process.returncode
+        active_ffmpeg_process = None
+        
+        if returncode == 0 and os.path.exists(trimmed_path):
+            # Delete original, keep trimmed
+            try:
+                os.remove(input_path)
+                logger.info(f"Deleted original file: {input_path}")
+            except Exception as e:
+                logger.warning(f"Could not delete original: {e}")
+            
+            # Rename trimmed to original name
+            try:
+                os.rename(trimmed_path, input_path)
+                logger.info(f"Trim successful, replaced original file.")
+                return input_path
+            except Exception as e:
+                logger.warning(f"Could not rename trimmed file: {e}")
+                return trimmed_path
+        else:
+            stderr_text = stderr_data.decode(errors='ignore') if stderr_data else ''
+            logger.error(f"FFmpeg trim failed (code {returncode}): {stderr_text}")
+            if os.path.exists(trimmed_path):
+                try: os.remove(trimmed_path)
+                except: pass
+            return input_path
+    except Exception as e:
+        logger.error(f"Trim error: {e}")
+        return input_path
+    finally:
+        active_ffmpeg_process = None
 
 def format_bytes(b):
     if b is None or b == 0: return "0.0B"
@@ -196,8 +282,25 @@ async def get_progress():
 
 @app.post("/api/cancel")
 async def cancel_download():
-    global cancel_requested
+    global cancel_requested, active_ffmpeg_process
     cancel_requested = True
+    
+    # Kill tracked ffmpeg process if running (for trimming or merging)
+    if active_ffmpeg_process and active_ffmpeg_process.poll() is None:
+        try:
+            active_ffmpeg_process.kill()
+            active_ffmpeg_process.wait(timeout=5)
+            logger.info("Killed active ffmpeg process.")
+        except:
+            pass
+    
+    # Fallback: kill any remaining ffmpeg.exe
+    if sys.platform == "win32":
+        try:
+            subprocess.run(['taskkill', '/F', '/IM', 'ffmpeg.exe', '/T'], capture_output=True, check=False)
+        except:
+            pass
+            
     return {"status": "cancel_requested"}
 
 @app.post("/api/download")
@@ -285,6 +388,18 @@ async def download_video(request: DownloadRequest):
         ydl_opts['format'] = fmt
         ydl_opts['merge_output_format'] = 'mp4'
 
+    # Trimming parameters (used AFTER download, not during)
+    needs_trim = False
+    trim_start_sec = 0
+    trim_end_sec = None
+    if request.start_time or request.end_time:
+        s = time_to_seconds(request.start_time)
+        e = time_to_seconds(request.end_time)
+        trim_start_sec = s if s is not None else 0
+        trim_end_sec = e  # None means end of file
+        if trim_start_sec > 0 or trim_end_sec is not None:
+            needs_trim = True
+
     def execute_download():
         target_template = output_template
         
@@ -357,13 +472,23 @@ async def download_video(request: DownloadRequest):
         # Post-download check for extension changes
         if not os.path.exists(filename):
             base = os.path.splitext(filename)[0]
-            for ext in ['mp4', 'mkv', 'webm']:
+            for ext in ['mp4', 'mkv', 'webm', 'mp3']:
                 if os.path.exists(f"{base}.{ext}"):
                     filename = f"{base}.{ext}"
                     break
         
         full_path = os.path.abspath(filename)
         logger.info(f"Download successful for ID: {download_id}. Saved to: {full_path}")
+        
+        # --- Post-download trim with ffmpeg ---
+        if needs_trim and os.path.exists(full_path) and not cancel_requested:
+            trimmed_path = await anyio.to_thread.run_sync(
+                lambda: trim_video_ffmpeg(full_path, trim_start_sec, trim_end_sec)
+            )
+            if trimmed_path and os.path.exists(trimmed_path):
+                full_path = os.path.abspath(trimmed_path)
+                filename = trimmed_path
+                logger.info(f"Trimmed video saved to: {full_path}")
             
         # Remove from cleanup list on success
         if filename in CURRENT_PROCESS_FILES:
@@ -377,7 +502,7 @@ async def download_video(request: DownloadRequest):
         }
 
     except Exception as e:
-        if str(e) == "DOWNLOAD_CANCELLED":
+        if cancel_requested or "DOWNLOAD_CANCELLED" in str(e):
             logger.info(f"Download {download_id} was cancelled by user.")
             progress_state["status"] = "cancelled"
             cleanup_interrupted_downloads()
@@ -398,6 +523,43 @@ async def heartbeat():
 async def get_config():
     _, quality = load_config()
     return {"default_dir": DOWNLOAD_DIR, "quality": quality}
+
+class InfoRequest(BaseModel):
+    url: str
+
+@app.post("/api/info")
+async def get_video_info(request: InfoRequest):
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True, # Fast extraction without downloading
+            'nocheckcertificate': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(request.url, download=False)
+            
+            # Handle playlists: return info for the first video or the playlist total
+            if 'entries' in info:
+                entries = list(info['entries'])
+                if entries:
+                    duration = entries[0].get('duration', 0)
+                    title = info.get('title', 'Playlist')
+                else:
+                    duration = 0
+                    title = "Empty Playlist"
+            else:
+                duration = info.get('duration', 0)
+                title = info.get('title', 'Unknown Title')
+                
+            return {
+                "status": "success",
+                "duration": duration,
+                "title": title
+            }
+    except Exception as e:
+        logger.error(f"Failed to fetch video info: {str(e)}")
+        return {"status": "error", "message": str(e)}
 
 class QualityRequest(BaseModel):
     quality: str
