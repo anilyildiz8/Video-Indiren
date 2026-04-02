@@ -1,9 +1,14 @@
 let currentSavedPath = ""; // Global tracker for the last saved file
 let videoDuration = 0; // Total video length in seconds
+let ffmpegReady = false;
+let setupPollHandle = null;
+let setupRetryPending = false;
 
 // Add listeners to URL input
 document.addEventListener("DOMContentLoaded", () => {
     const urlInput = document.getElementById('urlInput');
+    const retrySetupBtn = document.getElementById('retrySetupBtn');
+    retrySetupBtn.addEventListener('click', retrySetup);
 
     // Auto-fetch info when user clicks away
     urlInput.addEventListener('blur', async () => {
@@ -58,6 +63,82 @@ document.addEventListener("DOMContentLoaded", () => {
 
     setupSliderEvents();
 });
+
+function setDownloadAvailability(enabled) {
+    ffmpegReady = enabled;
+    document.getElementById('downloadBtn').disabled = !enabled;
+}
+
+function renderSetupState(data) {
+    const overlay = document.getElementById('setupOverlay');
+    const setupMessage = document.getElementById('setupMessage');
+    const setupPercent = document.getElementById('setupPercent');
+    const setupProgressBar = document.getElementById('setupProgressBar');
+    const retrySetupBtn = document.getElementById('retrySetupBtn');
+
+    const status = data.status || 'pending';
+    const progress = Math.max(0, Math.min(100, Number(data.progress || 0)));
+    const ffmpegAvailable = Boolean(data.ffmpeg_available);
+
+    setupMessage.textContent = data.message || 'FFmpeg hazirlaniyor.';
+    setupPercent.textContent = `${progress}%`;
+    setupProgressBar.style.width = `${progress}%`;
+
+    if (status === 'failed') {
+        overlay.classList.remove('hidden');
+        retrySetupBtn.classList.remove('hidden');
+        retrySetupBtn.disabled = setupRetryPending;
+        setDownloadAvailability(false);
+        return;
+    }
+
+    retrySetupBtn.classList.add('hidden');
+
+    if (ffmpegAvailable || status === 'complete') {
+        overlay.classList.add('hidden');
+        setDownloadAvailability(true);
+        return;
+    }
+
+    overlay.classList.remove('hidden');
+    setDownloadAvailability(false);
+}
+
+async function pollSetupStatus() {
+    try {
+        const response = await fetch('/api/setup_status');
+        const data = await response.json();
+        renderSetupState(data);
+
+        if ((data.status === 'complete' || data.ffmpeg_available) && setupPollHandle) {
+            clearInterval(setupPollHandle);
+            setupPollHandle = null;
+        }
+    } catch (e) {
+        console.error("Setup status poll failed", e);
+    }
+}
+
+async function retrySetup() {
+    const retrySetupBtn = document.getElementById('retrySetupBtn');
+    setupRetryPending = true;
+    retrySetupBtn.disabled = true;
+    retrySetupBtn.textContent = 'Tekrar deneniyor...';
+
+    try {
+        await fetch('/api/retry_setup', { method: 'POST' });
+        if (!setupPollHandle) {
+            setupPollHandle = setInterval(pollSetupStatus, 1000);
+        }
+        await pollSetupStatus();
+    } catch (e) {
+        console.error("Retry setup failed", e);
+    } finally {
+        setupRetryPending = false;
+        retrySetupBtn.disabled = false;
+        retrySetupBtn.textContent = 'Tekrar Dene';
+    }
+}
 
 // Time formatting helpers
 function formatTimeLimit(seconds) {
@@ -161,6 +242,13 @@ function updateSliderTrack() {
 }
 
 async function startDownload() {
+    if (!ffmpegReady) {
+        const status = document.getElementById('statusMessage');
+        status.textContent = "Ilk kurulum tamamlanmadan indirme baslatilamaz.";
+        status.className = "status error";
+        return;
+    }
+
     const input = document.getElementById('urlInput');
     const btn = document.getElementById('downloadBtn');
     const btnText = document.getElementById('btnText');
@@ -359,6 +447,11 @@ async function cancelDownload() {
 // Fetch default config on load
 window.addEventListener('load', async () => {
     try {
+        await pollSetupStatus();
+        if (!setupPollHandle && !ffmpegReady) {
+            setupPollHandle = setInterval(pollSetupStatus, 1000);
+        }
+
         const response = await fetch('/api/config');
         const data = await response.json();
         if (data.default_dir) {
@@ -393,6 +486,14 @@ setInterval(async () => {
         console.error("Heartbeat failed", e);
     }
 }, 3000); // 3s pulse for 10s shutdown
+
+window.addEventListener('beforeunload', () => {
+    try {
+        navigator.sendBeacon('/api/shutdown');
+    } catch (e) {
+        console.error("Shutdown beacon failed", e);
+    }
+});
 
 async function openResultFolder() {
     if (!currentSavedPath) return;

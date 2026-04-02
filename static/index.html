@@ -12,6 +12,19 @@
 </head>
 
 <body>
+    <div id="setupOverlay" class="setup-overlay hidden">
+        <div class="setup-card">
+            <div class="setup-spinner"></div>
+            <h2>Ilk kurulum yapiliyor...</h2>
+            <p id="setupMessage">FFmpeg hazirlaniyor.</p>
+            <div class="setup-progress-wrapper">
+                <div id="setupProgressBar" class="setup-progress-bar"></div>
+            </div>
+            <div id="setupPercent" class="setup-percent">0%</div>
+            <button id="retrySetupBtn" class="retry-btn hidden" type="button">Tekrar Dene</button>
+        </div>
+    </div>
+
     <div class="container">
         <header>
             <h1>Video İndiren</h1>

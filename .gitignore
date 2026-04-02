@@ -3,13 +3,16 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.log
+*.sqlite3
 
-# Environments
+# Virtual Environments
 .env
 .venv
 env/
 venv/
 ENV/
+env.bak/
+venv.bak/
 
 # PyInstaller
 build/
@@ -20,7 +23,10 @@ dist/
 ffmpeg/
 downloads/
 .video_indiren_config.json
+*.pid
 
-# IDEs
+# IDEs / OS
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
