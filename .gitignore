@@ -25,6 +25,13 @@ downloads/
 .video_indiren_config.json
 *.pid
 
+# Android/mobile experiment
+android/
+mobile_main.py
+app/mobile_api.py
+app/mobile_models.py
+app/mobile_service.py
+
 # IDEs / OS
 .vscode/
 .idea/

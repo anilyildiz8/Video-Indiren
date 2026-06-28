@@ -3,6 +3,9 @@ let videoDuration = 0; // Total video length in seconds
 let ffmpegReady = false;
 let setupPollHandle = null;
 let setupRetryPending = false;
+let trimSelectionTouched = false;
+const TRIM_COMPARE_EPSILON = 0.001;
+const MIN_TRIM_GAP_SECONDS = 0.01;
 
 // Add listeners to URL input
 document.addEventListener("DOMContentLoaded", () => {
@@ -143,22 +146,39 @@ async function retrySetup() {
 // Time formatting helpers
 function formatTimeLimit(seconds) {
     if (!seconds) return "00:00:00";
-    const h = Math.floor(seconds / 3600);
-    const m = Math.floor((seconds % 3600) / 60);
-    const s = Math.floor(seconds % 60);
-    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    const roundedSeconds = Math.round(Number(seconds) * 100) / 100;
+    const h = Math.floor(roundedSeconds / 3600);
+    const m = Math.floor((roundedSeconds % 3600) / 60);
+    const s = roundedSeconds - h * 3600 - m * 60;
+    const wholeSeconds = Math.floor(s);
+    const centiseconds = Math.round((s - wholeSeconds) * 100);
+    let secondsText = wholeSeconds.toString().padStart(2, '0');
+
+    if (centiseconds > 0) {
+        secondsText += `.${centiseconds.toString().padStart(2, '0')}`;
+    }
+
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${secondsText}`;
 }
 
 function parseTimeInput(timeStr) {
     if (!timeStr) return 0;
     const parts = timeStr.split(':');
+    let totalSeconds = 0;
+
     if (parts.length === 3) {
-        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+        totalSeconds = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseFloat(parts[2]);
     } else if (parts.length === 2) {
-        return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+        totalSeconds = parseInt(parts[0]) * 60 + parseFloat(parts[1]);
     } else {
-        return parseInt(timeStr) || 0;
+        totalSeconds = parseFloat(timeStr);
     }
+
+    return Number.isFinite(totalSeconds) ? totalSeconds : 0;
+}
+
+function clampTime(seconds, min, max) {
+    return Math.min(Math.max(seconds, min), max);
 }
 
 // Slider logic
@@ -173,6 +193,7 @@ function setupSliders() {
 
     minSlider.value = 0;
     maxSlider.value = videoDuration;
+    trimSelectionTouched = false;
 
     startInput.value = formatTimeLimit(0);
     endInput.value = formatTimeLimit(videoDuration);
@@ -187,22 +208,24 @@ function setupSliderEvents() {
     const endInput = document.getElementById('endTimeInput');
 
     minSlider.addEventListener('input', () => {
-        let minVal = parseInt(minSlider.value);
-        let maxVal = parseInt(maxSlider.value);
-        if (minVal > maxVal - 1) { // Min 1 sec gap
-            minSlider.value = maxVal - 1;
-            minVal = maxVal - 1;
+        trimSelectionTouched = true;
+        let minVal = parseFloat(minSlider.value);
+        let maxVal = parseFloat(maxSlider.value);
+        if (minVal > maxVal - MIN_TRIM_GAP_SECONDS) {
+            minVal = clampTime(maxVal - MIN_TRIM_GAP_SECONDS, 0, videoDuration);
+            minSlider.value = minVal;
         }
         startInput.value = formatTimeLimit(minVal);
         updateSliderTrack();
     });
 
     maxSlider.addEventListener('input', () => {
-        let minVal = parseInt(minSlider.value);
-        let maxVal = parseInt(maxSlider.value);
-        if (maxVal < minVal + 1) { // Min 1 sec gap
-            maxSlider.value = minVal + 1;
-            maxVal = minVal + 1;
+        trimSelectionTouched = true;
+        let minVal = parseFloat(minSlider.value);
+        let maxVal = parseFloat(maxSlider.value);
+        if (maxVal < minVal + MIN_TRIM_GAP_SECONDS) {
+            maxVal = clampTime(minVal + MIN_TRIM_GAP_SECONDS, 0, videoDuration);
+            maxSlider.value = maxVal;
         }
         endInput.value = formatTimeLimit(maxVal);
         updateSliderTrack();
@@ -210,18 +233,22 @@ function setupSliderEvents() {
 
     // Update sliders when text inputs are manually changed
     startInput.addEventListener('change', () => {
+        trimSelectionTouched = true;
         let sec = parseTimeInput(startInput.value);
-        if (sec > parseInt(maxSlider.value)) sec = parseInt(maxSlider.value) - 1;
-        if (sec < 0) sec = 0;
+        const maxVal = parseFloat(maxSlider.value);
+        if (sec > maxVal - MIN_TRIM_GAP_SECONDS) sec = maxVal - MIN_TRIM_GAP_SECONDS;
+        sec = clampTime(sec, 0, videoDuration);
         minSlider.value = sec;
         startInput.value = formatTimeLimit(sec);
         updateSliderTrack();
     });
 
     endInput.addEventListener('change', () => {
+        trimSelectionTouched = true;
         let sec = parseTimeInput(endInput.value);
-        if (sec < parseInt(minSlider.value)) sec = parseInt(minSlider.value) + 1;
-        if (sec > videoDuration) sec = videoDuration;
+        const minVal = parseFloat(minSlider.value);
+        if (sec < minVal + MIN_TRIM_GAP_SECONDS) sec = minVal + MIN_TRIM_GAP_SECONDS;
+        sec = clampTime(sec, 0, videoDuration);
         maxSlider.value = sec;
         endInput.value = formatTimeLimit(sec);
         updateSliderTrack();
@@ -343,13 +370,12 @@ async function startDownload() {
         let final_start = null;
         let final_end = null;
 
-        // Only send trim parameters if the user actually modified the sliders
-        // to be something other than the full video length.
-        if (document.getElementById('trimmingSection').style.display !== 'none' && videoDuration > 0) {
+        // Only send trim parameters after an intentional trim edit.
+        if (trimSelectionTouched && document.getElementById('trimmingSection').style.display !== 'none' && videoDuration > 0) {
             const currentStart = parseTimeInput(start_time);
             const currentEnd = parseTimeInput(end_time);
 
-            if (currentStart > 0 || currentEnd < videoDuration) {
+            if (currentStart > TRIM_COMPARE_EPSILON || currentEnd < videoDuration - TRIM_COMPARE_EPSILON) {
                 final_start = start_time;
                 final_end = end_time;
             }
