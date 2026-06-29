@@ -73,7 +73,7 @@ def build_ydl_opts(url, request, download_dir):
         'quiet': True,
         'no_warnings': True,
         'nocolor': True,
-        'ignoreerrors': True,
+        'ignoreerrors': request.download_playlist,
         'restrictfilenames': False,
         'progress_hooks': [progress_hook],
         'postprocessor_hooks': [postprocessor_hook],
@@ -85,20 +85,20 @@ def build_ydl_opts(url, request, download_dir):
         'prefer_ffmpeg': True,
         'windows_filenames': True,
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'add_header': [
-            'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language: en-US,en;q=0.9',
-            'Cache-Control: no-cache',
-            'Pragma: no-cache',
-            'Sec-Ch-Ua: "Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            'Sec-Ch-Ua-Mobile: ?0',
-            'Sec-Ch-Ua-Platform: "Windows"',
-            'Sec-Fetch-Dest: document',
-            'Sec-Fetch-Mode: navigate',
-            'Sec-Fetch-Site: none',
-            'Sec-Fetch-User: ?1',
-            'Upgrade-Insecure-Requests: 1',
-        ],
+        'http_headers': {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1',
+        },
         'format_sort': ['res', 'ext:mp4:m4a'],
         'postprocessor_args': {
             'merger': ['-c', 'copy', '-movflags', '+faststart']
@@ -133,6 +133,8 @@ def build_ydl_opts(url, request, download_dir):
 def _attempt_dl(ydl_opts, url, is_playlist=False, download_dir=None):
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
+        if info is None:
+            raise ValueError("Video bilgisi alinamadi. Video gizli olabilir, giris gerektirebilir veya site tarafindan engellenmis olabilir.")
         if is_playlist and ('entries' in info or info.get('_type') == 'playlist'):
             playlist_title = info.get('title', 'Playlist')
             from yt_dlp.utils import sanitize_filename
@@ -140,6 +142,25 @@ def _attempt_dl(ydl_opts, url, is_playlist=False, download_dir=None):
             if download_dir:
                 return os.path.join(download_dir, safe_title)
         return ydl.prepare_filename(info)
+
+
+def _should_try_next_browser(err_msg):
+    cookie_error_terms = [
+        "cookie",
+        "cookies",
+        "browser",
+        "profile",
+        "database",
+        "keyring",
+        "decrypt",
+        "permission denied",
+        "access is denied",
+    ]
+
+    if any(term in err_msg for term in cookie_error_terms):
+        return True
+
+    return "forbidden" in err_msg or "403" in err_msg
 
 
 def execute_download(url, request, download_dir):
@@ -175,7 +196,13 @@ def execute_download(url, request, download_dir):
     final_opts['outtmpl'] = output_template
 
     browsers = ['edge', 'chrome', 'brave', 'opera', 'firefox']
-    last_error = None
+
+    try:
+        logger.info("Attempting download without browser cookies...")
+        return _attempt_dl(final_opts.copy(), url, request.download_playlist, download_dir)
+    except Exception as e:
+        no_cookie_error = e
+        logger.warning(f"Download without browser cookies failed, trying browser cookies: {e}")
 
     for browser in browsers:
         try:
@@ -185,21 +212,13 @@ def execute_download(url, request, download_dir):
             return _attempt_dl(current_opts, url, request.download_playlist, download_dir)
         except Exception as e:
             err_msg = str(e).lower()
-            last_error = e
-            if ("cookie" in err_msg and "database" in err_msg) or "forbidden" in err_msg or "403" in err_msg:
-                logger.warning(f"Browser {browser} failed (lock or 403), trying next...")
+            if _should_try_next_browser(err_msg):
+                logger.warning(f"Browser {browser} failed with a retryable cookie/browser error, trying next...")
                 continue
             else:
                 break
 
-    try:
-        logger.info("Retrying without cookies...")
-        fallback_opts = final_opts.copy()
-        if 'cookiesfrombrowser' in fallback_opts:
-            del fallback_opts['cookiesfrombrowser']
-        return _attempt_dl(fallback_opts, url, request.download_playlist, download_dir)
-    except Exception as e:
-        raise e if last_error is None else last_error
+    raise no_cookie_error
 
 
 async def run_download(url, request, download_dir):
